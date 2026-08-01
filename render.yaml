@@ -1,9 +1,3 @@
-databases:
-  - name: home-dashboard-db
-    plan: starter
-    # "free" Postgres instances on Render are deleted after 30 days — not suitable for a
-    # dashboard meant to hold real household data long-term.
-
 services:
   - type: web
     name: home-dashboard
@@ -19,10 +13,11 @@ services:
       mountPath: /var/data/photos
       sizeGB: 1
     envVars:
+      # Render no longer offers a genuinely free long-term Postgres, so this points at an
+      # external database instead (e.g. a free Neon project) — fill in after deploying,
+      # see README for exact steps.
       - key: DATABASE_URL
-        fromDatabase:
-          name: home-dashboard-db
-          property: connectionString
+        sync: false
       - key: PHOTOS_DIR
         value: /var/data/photos
       # Render terminates TLS at its proxy and forwards the original protocol/host in these

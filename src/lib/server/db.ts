@@ -19,7 +19,7 @@ pg.types.setTypeParser(20, (val: string) => Number(val));
 
 const pool = new pg.Pool({
 	connectionString: env.DATABASE_URL,
-	// Render's managed Postgres requires SSL; a local Docker Postgres doesn't have it configured.
+	// Hosted Postgres (e.g. Neon) requires SSL; a local Docker Postgres doesn't have it configured.
 	ssl: isLocalHost ? false : { rejectUnauthorized: false }
 });
 

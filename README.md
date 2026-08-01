@@ -8,7 +8,8 @@ slideshow, and a travel countdown.
 ## Tech stack
 
 - **[SvelteKit](https://svelte.dev/docs/kit)** — full-stack framework, server routes + UI in one app.
-- **Postgres** (via `pg`) — local dev runs it in Docker; production (Render) uses a managed instance.
+- **Postgres** (via `pg`) — local dev runs it in Docker; production uses a free external
+  [Neon](https://neon.tech) instance (Render's own Postgres is no longer free long-term).
 - **bcryptjs** — password hashing.
 - **Tailwind CSS v4** — styling.
 - Session-cookie auth (random token, session stored server-side in Postgres) — no third-party auth
@@ -16,20 +17,32 @@ slideshow, and a travel countdown.
 
 ## Deploy to Render
 
-The whole app (web service + database) is defined in `render.yaml`, so deploying is mostly one
-click. Only three things can't be automated:
+The web service is defined in `render.yaml`, so deploying is mostly one click. The database is
+**not** included in the blueprint — Render no longer offers a genuinely free long-term Postgres,
+so this app connects to a free external [Neon](https://neon.tech) database instead. A handful of
+things can't be automated:
 
-1. **Create a [Render](https://render.com) account, connect this GitHub repo, and deploy the
+1. **Create a free Neon Postgres database.** Sign up at [neon.tech](https://neon.tech) (no credit
+   card required for the free tier), create a project (this creates a database for you too), and
+   from the project dashboard copy the **connection string** (looks like
+   `postgres://user:password@ep-xxxx.region.aws.neon.tech/dbname?sslmode=require`). Keep it handy
+   for step 3.
+
+2. **Create a [Render](https://render.com) account, connect this GitHub repo, and deploy the
    blueprint.** In the Render dashboard: **New +** → **Blueprint** → select this repo → **Apply**.
-   Render creates the web service and Postgres database together, and generates the two household
-   account passwords automatically (find them later under your service's **Environment** tab, as
-   `SEED_USER1_PASSWORD` / `SEED_USER2_PASSWORD`).
+   Render creates the web service and generates the two household account passwords automatically
+   (find them later under your service's **Environment** tab, as `SEED_USER1_PASSWORD` /
+   `SEED_USER2_PASSWORD`).
 
-2. **Add your Spotify credentials.** On your new web service, open the **Environment** tab and
-   paste your existing Spotify Client ID and Client Secret into `SPOTIFY_CLIENT_ID` and
-   `SPOTIFY_CLIENT_SECRET`. (Skip this if you don't use the Spotify integration.)
+3. **Add your Neon connection string.** On your new web service, open the **Environment** tab and
+   paste the connection string from step 1 into `DATABASE_URL`, then click **Save Changes** (this
+   triggers a redeploy automatically).
 
-3. **Point Spotify at your production URL.** Spotify requires an exact match, so this has to be
+4. **Add your Spotify credentials.** On the same **Environment** tab, paste your existing Spotify
+   Client ID and Client Secret into `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`. (Skip this if
+   you don't use the Spotify integration.)
+
+5. **Point Spotify at your production URL.** Spotify requires an exact match, so this has to be
    done manually:
    1. On your Render service's page, copy the URL shown at the top (looks like
       `https://home-dashboard-xxxx.onrender.com`).
@@ -43,7 +56,7 @@ click. Only three things can't be automated:
    5. Click **Save** at the bottom of the Spotify settings page.
 
 Once the deploy finishes, visit your Render URL and log in with `alice` or `bob` (usernames from
-`render.yaml`) and the generated password from step 1. Go to `/spotify` to connect Spotify.
+`render.yaml`) and the generated password from step 2. Go to `/spotify` to connect Spotify.
 
 ## Requirements (local development)
 
