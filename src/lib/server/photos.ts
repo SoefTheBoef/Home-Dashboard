@@ -1,5 +1,4 @@
-import { mkdirSync } from 'node:fs';
-import { unlink, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { env } from '$env/dynamic/private';
@@ -8,7 +7,19 @@ import { db } from './db';
 // In production this points at a Render Persistent Disk mount (see render.yaml) so uploads
 // survive deploys; locally it defaults to a folder inside the project.
 export const PHOTOS_DIR = path.resolve(env.PHOTOS_DIR || './data/uploads/photos');
-mkdirSync(PHOTOS_DIR, { recursive: true });
+
+/**
+ * Creates PHOTOS_DIR on first use rather than at module load — module load happens during
+ * build-time SSR analysis too, before a mounted disk (e.g. Render's) is necessarily available,
+ * and a failed mkdir there would crash the build itself rather than just the upload.
+ */
+async function ensurePhotosDir(): Promise<void> {
+	try {
+		await mkdir(PHOTOS_DIR, { recursive: true });
+	} catch (err) {
+		console.warn(`Could not create photos directory at ${PHOTOS_DIR}:`, err);
+	}
+}
 
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8MB
 
@@ -53,6 +64,7 @@ export async function savePhoto(file: File, uploadedBy: number): Promise<SavePho
 
 	const filename = `${randomUUID()}${ext}`;
 	const buffer = Buffer.from(await file.arrayBuffer());
+	await ensurePhotosDir();
 	await writeFile(path.join(PHOTOS_DIR, filename), buffer);
 
 	await db
