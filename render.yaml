@@ -1,0 +1,64 @@
+databases:
+  - name: home-dashboard-db
+    plan: starter
+    # "free" Postgres instances on Render are deleted after 30 days — not suitable for a
+    # dashboard meant to hold real household data long-term.
+
+services:
+  - type: web
+    name: home-dashboard
+    env: node
+    plan: starter
+    # Free web services don't support persistent disks, and this app needs one for uploaded
+    # photos to survive a redeploy.
+    buildCommand: npm install && npm run build
+    startCommand: node build
+    autoDeploy: true
+    disk:
+      name: photos
+      mountPath: /var/data/photos
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: home-dashboard-db
+          property: connectionString
+      - key: PHOTOS_DIR
+        value: /var/data/photos
+      # Render terminates TLS at its proxy and forwards the original protocol/host in these
+      # headers; trusting them lets adapter-node compute the correct HTTPS origin for CSRF
+      # checks and cookies without needing to hardcode the eventual *.onrender.com URL here.
+      - key: PROTOCOL_HEADER
+        value: x-forwarded-proto
+      - key: HOST_HEADER
+        value: x-forwarded-host
+      # adapter-node's default body size limit (512kb) is too small for photo uploads.
+      - key: BODY_SIZE_LIMIT
+        value: '10485760'
+      - key: NODE_ENV
+        value: production
+      # The two household accounts are created automatically on first boot. Passwords are
+      # random — after deploying, find them under this service's Environment tab.
+      - key: SEED_USER1_USERNAME
+        value: alice
+      - key: SEED_USER1_PASSWORD
+        generateValue: true
+      - key: SEED_USER1_DISPLAY_NAME
+        value: Alice
+      - key: SEED_USER1_COLOR
+        value: '#6366f1'
+      - key: SEED_USER2_USERNAME
+        value: bob
+      - key: SEED_USER2_PASSWORD
+        generateValue: true
+      - key: SEED_USER2_DISPLAY_NAME
+        value: Bob
+      - key: SEED_USER2_COLOR
+        value: '#ec4899'
+      # Fill these in after deploying — see README for exact steps.
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: SPOTIFY_REDIRECT_URI
+        sync: false

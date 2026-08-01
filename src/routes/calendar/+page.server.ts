@@ -1,0 +1,385 @@
+import { fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
+import { db } from '$lib/server/db';
+import { getAllUsers } from '$lib/server/users';
+import { getMonthGrid, todayYmd, ymd } from '$lib/calendar-date';
+import { ensureRecurringEvents } from '$lib/server/event-series';
+import { logActivity } from '$lib/server/activity';
+import { getNextCollectionDate, listWasteSchedules } from '$lib/server/waste';
+
+export interface EventRow {
+	id: number;
+	title: string;
+	start_at: string;
+	end_at: string | null;
+	all_day: number;
+	location: string | null;
+	notes: string | null;
+	applies_to: string;
+	event_type: string;
+	series_id: number | null;
+}
+
+export interface EventSeriesRow {
+	id: number;
+	title: string;
+	weekdays: string;
+	start_time: string | null;
+	end_time: string | null;
+	location: string | null;
+	notes: string | null;
+	applies_to: string;
+	event_type: string;
+	series_start_date: string;
+	series_end_date: string | null;
+	active: number;
+}
+
+export interface TripRow {
+	id: number;
+	name: string;
+	start_date: string;
+	end_date: string | null;
+	notes: string | null;
+}
+
+export const load: PageServerLoad = async ({ url }) => {
+	await ensureRecurringEvents();
+
+	const now = new Date();
+	const year = Number(url.searchParams.get('year')) || now.getFullYear();
+	const month = Number(url.searchParams.get('month')) ?? now.getMonth();
+	const tab = url.searchParams.get('tab') ?? 'calendar';
+
+	const grid = getMonthGrid(year, month);
+	const rangeStart = ymd(grid[0]);
+	const rangeEndExclusive = ymd(grid[grid.length - 1] as Date);
+
+	const events = (await db
+		.prepare(
+			`SELECT id, title, start_at, end_at, all_day, location, notes, applies_to, event_type, series_id
+			 FROM events
+			 WHERE substr(start_at, 1, 10) BETWEEN ? AND ?
+			 ORDER BY start_at ASC`
+		)
+		.all(rangeStart, rangeEndExclusive)) as unknown as EventRow[];
+
+	const series = (await db
+		.prepare(
+			`SELECT id, title, weekdays, start_time, end_time, location, notes, applies_to, event_type,
+			        series_start_date, series_end_date, active
+			 FROM event_series
+			 ORDER BY series_start_date ASC`
+		)
+		.all()) as unknown as EventSeriesRow[];
+
+	const today = todayYmd();
+	const wasteSchedulesRaw = await listWasteSchedules();
+	const wasteSchedules = wasteSchedulesRaw.map((s) => ({
+		...s,
+		next_date: getNextCollectionDate(s, today)
+	}));
+
+	const trips = (await db
+		.prepare('SELECT id, name, start_date, end_date, notes FROM trips ORDER BY start_date ASC')
+		.all()) as unknown as TripRow[];
+
+	const nextTrip =
+		(trips.find((t) => (t.end_date ?? t.start_date) >= today) as TripRow | undefined) ?? null;
+
+	return {
+		tab,
+		year,
+		month,
+		grid: grid.map((d) => d.toISOString()),
+		events,
+		series,
+		users: await getAllUsers(),
+		wasteSchedules,
+		trips,
+		nextTrip
+	};
+};
+
+function parseAppliesTo(value: FormDataEntryValue | null): string {
+	return value ? String(value) : 'both';
+}
+
+export const actions: Actions = {
+	createEvent: async ({ request, locals }) => {
+		const form = await request.formData();
+		const title = String(form.get('title') ?? '').trim();
+		const date = String(form.get('date') ?? '');
+		const allDay = form.get('all_day') === 'on';
+		const time = String(form.get('time') ?? '');
+		const endTime = String(form.get('end_time') ?? '');
+		const location = String(form.get('location') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+		const appliesTo = parseAppliesTo(form.get('applies_to'));
+		const eventType = String(form.get('event_type') ?? 'event');
+
+		if (!title || !date) {
+			return fail(400, { error: 'Title and date are required.' });
+		}
+
+		const startAt = allDay || !time ? date : `${date}T${time}`;
+		const endAt = allDay ? null : endTime ? `${date}T${endTime}` : null;
+
+		await db
+			.prepare(
+				`INSERT INTO events (title, start_at, end_at, all_day, location, notes, applies_to, event_type)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(title, startAt, endAt, allDay ? 1 : 0, location, notes, appliesTo, eventType);
+
+		await logActivity(locals.user!.id, `added "${title}" to the calendar (${date})`);
+
+		return { success: true };
+	},
+
+	updateEvent: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const title = String(form.get('title') ?? '').trim();
+		const date = String(form.get('date') ?? '');
+		const allDay = form.get('all_day') === 'on';
+		const time = String(form.get('time') ?? '');
+		const endTime = String(form.get('end_time') ?? '');
+		const location = String(form.get('location') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+		const appliesTo = parseAppliesTo(form.get('applies_to'));
+		const eventType = String(form.get('event_type') ?? 'event');
+
+		if (!id || !title || !date) {
+			return fail(400, { error: 'Title and date are required.' });
+		}
+
+		const startAt = allDay || !time ? date : `${date}T${time}`;
+		const endAt = allDay ? null : endTime ? `${date}T${endTime}` : null;
+
+		await db
+			.prepare(
+				`UPDATE events SET title = ?, start_at = ?, end_at = ?, all_day = ?, location = ?, notes = ?, applies_to = ?, event_type = ?
+				 WHERE id = ?`
+			)
+			.run(title, startAt, endAt, allDay ? 1 : 0, location, notes, appliesTo, eventType, id);
+
+		return { success: true };
+	},
+
+	deleteEvent: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		if (id) {
+			await db.prepare('DELETE FROM events WHERE id = ?').run(id);
+		}
+		return { success: true };
+	},
+
+	createSeries: async ({ request }) => {
+		const form = await request.formData();
+		const title = String(form.get('title') ?? '').trim();
+		const weekdays = form.getAll('weekdays').map(String);
+		const startTime = String(form.get('start_time') ?? '').trim() || null;
+		const endTime = String(form.get('end_time') ?? '').trim() || null;
+		const appliesTo = parseAppliesTo(form.get('applies_to'));
+		const location = String(form.get('location') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+		const seriesStartDate = String(form.get('series_start_date') ?? '');
+		const seriesEndDate = String(form.get('series_end_date') ?? '').trim() || null;
+
+		if (!title || weekdays.length === 0 || !seriesStartDate) {
+			return fail(400, {
+				error: 'Title, at least one weekday, and a start date are required.'
+			});
+		}
+
+		await db
+			.prepare(
+				`INSERT INTO event_series
+				 (title, weekdays, start_time, end_time, location, notes, applies_to, event_type, series_start_date, series_end_date)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'work', ?, ?)`
+			)
+			.run(
+				title,
+				weekdays.join(','),
+				startTime,
+				endTime,
+				location,
+				notes,
+				appliesTo,
+				seriesStartDate,
+				seriesEndDate
+			);
+
+		await ensureRecurringEvents();
+
+		return { success: true };
+	},
+
+	updateSeries: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const title = String(form.get('title') ?? '').trim();
+		const weekdays = form.getAll('weekdays').map(String);
+		const startTime = String(form.get('start_time') ?? '').trim() || null;
+		const endTime = String(form.get('end_time') ?? '').trim() || null;
+		const appliesTo = parseAppliesTo(form.get('applies_to'));
+		const location = String(form.get('location') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+		const seriesStartDate = String(form.get('series_start_date') ?? '');
+		const seriesEndDate = String(form.get('series_end_date') ?? '').trim() || null;
+
+		if (!id || !title || weekdays.length === 0 || !seriesStartDate) {
+			return fail(400, {
+				error: 'Title, at least one weekday, and a start date are required.'
+			});
+		}
+
+		await db
+			.prepare(
+				`UPDATE event_series
+				 SET title = ?, weekdays = ?, start_time = ?, end_time = ?, location = ?, notes = ?,
+				     applies_to = ?, series_start_date = ?, series_end_date = ?
+				 WHERE id = ?`
+			)
+			.run(
+				title,
+				weekdays.join(','),
+				startTime,
+				endTime,
+				location,
+				notes,
+				appliesTo,
+				seriesStartDate,
+				seriesEndDate,
+				id
+			);
+
+		await ensureRecurringEvents();
+
+		return { success: true };
+	},
+
+	toggleSeriesActive: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const s = (await db.prepare('SELECT active FROM event_series WHERE id = ?').get(id)) as
+			| { active: number }
+			| undefined;
+		if (!s) return fail(404, { error: 'Series not found.' });
+
+		await db.prepare('UPDATE event_series SET active = ? WHERE id = ?').run(s.active ? 0 : 1, id);
+
+		if (!s.active) await ensureRecurringEvents();
+
+		return { success: true };
+	},
+
+	deleteSeries: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		if (id) {
+			await db.prepare('DELETE FROM event_series WHERE id = ?').run(id);
+		}
+		return { success: true };
+	},
+
+	createWaste: async ({ request }) => {
+		const form = await request.formData();
+		const label = String(form.get('label') ?? '').trim();
+		const weekday = Number(form.get('weekday'));
+		const cadence = String(form.get('cadence') ?? 'weekly');
+		const anchorDate = String(form.get('anchor_date') ?? '');
+		const color = String(form.get('color') ?? '').trim() || '#6b7280';
+
+		if (!label || Number.isNaN(weekday) || !anchorDate) {
+			return fail(400, { error: 'Label, weekday and a reference date are required.' });
+		}
+
+		await db
+			.prepare(
+				'INSERT INTO waste_schedules (label, weekday, cadence, anchor_date, color) VALUES (?, ?, ?, ?, ?)'
+			)
+			.run(label, weekday, cadence, anchorDate, color);
+
+		return { success: true };
+	},
+
+	updateWaste: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const label = String(form.get('label') ?? '').trim();
+		const weekday = Number(form.get('weekday'));
+		const cadence = String(form.get('cadence') ?? 'weekly');
+		const anchorDate = String(form.get('anchor_date') ?? '');
+		const color = String(form.get('color') ?? '').trim() || '#6b7280';
+
+		if (!id || !label || Number.isNaN(weekday) || !anchorDate) {
+			return fail(400, { error: 'Label, weekday and a reference date are required.' });
+		}
+
+		await db
+			.prepare(
+				'UPDATE waste_schedules SET label = ?, weekday = ?, cadence = ?, anchor_date = ?, color = ? WHERE id = ?'
+			)
+			.run(label, weekday, cadence, anchorDate, color, id);
+
+		return { success: true };
+	},
+
+	deleteWaste: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		if (id) {
+			await db.prepare('DELETE FROM waste_schedules WHERE id = ?').run(id);
+		}
+		return { success: true };
+	},
+
+	createTrip: async ({ request }) => {
+		const form = await request.formData();
+		const name = String(form.get('name') ?? '').trim();
+		const startDate = String(form.get('start_date') ?? '');
+		const endDate = String(form.get('end_date') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+
+		if (!name || !startDate) {
+			return fail(400, { error: 'Trip name and start date are required.' });
+		}
+
+		await db
+			.prepare('INSERT INTO trips (name, start_date, end_date, notes) VALUES (?, ?, ?, ?)')
+			.run(name, startDate, endDate, notes);
+
+		return { success: true };
+	},
+
+	updateTrip: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const name = String(form.get('name') ?? '').trim();
+		const startDate = String(form.get('start_date') ?? '');
+		const endDate = String(form.get('end_date') ?? '').trim() || null;
+		const notes = String(form.get('notes') ?? '').trim() || null;
+
+		if (!id || !name || !startDate) {
+			return fail(400, { error: 'Trip name and start date are required.' });
+		}
+
+		await db
+			.prepare('UPDATE trips SET name = ?, start_date = ?, end_date = ?, notes = ? WHERE id = ?')
+			.run(name, startDate, endDate, notes, id);
+
+		return { success: true };
+	},
+
+	deleteTrip: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		if (id) {
+			await db.prepare('DELETE FROM trips WHERE id = ?').run(id);
+		}
+		return { success: true };
+	}
+};
