@@ -3,6 +3,17 @@ import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { addDays, mondayOf, todayYmd } from '$lib/calendar-date';
 
+/** Inventory item names are often qualified ("Eieren (12 stuks)") — match on the core noun only. */
+function coreName(name: string): string {
+	return name.split('(')[0].trim().toLowerCase();
+}
+
+function matchesInventory(ingredientLine: string, inventoryItemName: string): boolean {
+	const line = ingredientLine.toLowerCase();
+	const core = coreName(inventoryItemName);
+	return core.length > 0 && (line.includes(core) || core.includes(line));
+}
+
 export interface MealEntryRow {
 	id: number;
 	date: string;
@@ -79,5 +90,65 @@ export const actions: Actions = {
 		}
 
 		return { success: true, added: items.length };
+	},
+
+	confirmCooked: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const entry = (await db.prepare('SELECT ingredients FROM meal_plan_entries WHERE id = ?').get(id)) as
+			| { ingredients: string | null }
+			| undefined;
+		if (!entry?.ingredients) return { success: true, decremented: 0 };
+
+		const lines = entry.ingredients
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean);
+
+		const inventory = (await db.prepare('SELECT id, item, quantity FROM food_inventory').all()) as unknown as {
+			id: number;
+			item: string;
+			quantity: number;
+		}[];
+
+		let decremented = 0;
+		for (const line of lines) {
+			const match = inventory.find((i) => matchesInventory(line, i.item));
+			if (!match) continue;
+			const nextQuantity = Math.max(0, match.quantity - 1);
+			await db
+				.prepare(
+					`UPDATE food_inventory SET quantity = ?, low_stock = CASE WHEN ? <= 0 THEN 1 ELSE low_stock END,
+					 updated_at = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = ?`
+				)
+				.run(nextQuantity, nextQuantity, match.id);
+			decremented++;
+		}
+
+		return { success: true, decremented };
+	},
+
+	addMissingToShopping: async ({ request }) => {
+		const form = await request.formData();
+		const id = Number(form.get('id'));
+		const entry = (await db.prepare('SELECT ingredients FROM meal_plan_entries WHERE id = ?').get(id)) as
+			| { ingredients: string | null }
+			| undefined;
+		if (!entry?.ingredients) return { success: true, added: 0 };
+
+		const lines = entry.ingredients
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean);
+
+		const inventory = (await db.prepare('SELECT item FROM food_inventory').all()) as unknown as { item: string }[];
+		const missing = lines.filter((line) => !inventory.some((i) => matchesInventory(line, i.item)));
+
+		const insert = db.prepare('INSERT INTO shopping_items (name) VALUES (?)');
+		for (const item of missing) {
+			await insert.run(item);
+		}
+
+		return { success: true, added: missing.length };
 	}
 };

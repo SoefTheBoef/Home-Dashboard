@@ -2,8 +2,9 @@
 
 A personal, self-hosted household dashboard for two people. Covers a shared income/expense
 tracker, household to-do list, bills tracker (including auto-generating fixed monthly bills),
-shopping list, a color-coded shared calendar for work schedules and appointments, a photo
-slideshow, and a travel countdown.
+shopping list, food inventory, a color-coded shared calendar for work schedules and appointments,
+a recycling collection calendar, Islamic prayer times, a photo slideshow, a live travel countdown,
+and an AI assistant grounded in the household's own data.
 
 ## Tech stack
 
@@ -12,6 +13,10 @@ slideshow, and a travel countdown.
   [Neon](https://neon.tech) instance (Render's own Postgres is no longer free long-term).
 - **bcryptjs** — password hashing.
 - **Tailwind CSS v4** — styling.
+- **[Claude API](https://console.anthropic.com)** (`@anthropic-ai/sdk`) — powers the chat assistant
+  and "what can we cook" dish suggestions; optional (see [AI assistant setup](#ai-assistant-setup)).
+- **[adhan](https://github.com/batoulapps/adhan-js)** — Islamic prayer time calculation.
+- **pdf-parse** — text extraction for re-importing the recycling collection calendar PDF.
 - Session-cookie auth (random token, session stored server-side in Postgres) — no third-party auth
   service, works fine offline on a home network.
 
@@ -42,7 +47,12 @@ things can't be automated:
    Client ID and Client Secret into `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`. (Skip this if
    you don't use the Spotify integration.)
 
-5. **Point Spotify at your production URL.** Spotify requires an exact match, so this has to be
+5. **Add your Anthropic API key.** On the same **Environment** tab, paste a Claude API key from
+   [console.anthropic.com](https://console.anthropic.com) into `ANTHROPIC_API_KEY`. (Skip this if
+   you don't want the AI assistant / dish-suggestion features — the rest of the app works fine
+   without it.)
+
+6. **Point Spotify at your production URL.** Spotify requires an exact match, so this has to be
    done manually:
    1. On your Render service's page, copy the URL shown at the top (looks like
       `https://home-dashboard-xxxx.onrender.com`).
@@ -57,6 +67,8 @@ things can't be automated:
 
 Once the deploy finishes, visit your Render URL and log in with `alice` or `bob` (usernames from
 `render.yaml`) and the generated password from step 2. Go to `/spotify` to connect Spotify.
+
+
 
 ## Requirements (local development)
 
@@ -111,24 +123,39 @@ Once the deploy finishes, visit your Render URL and log in with `alice` or `bob`
     charge date) with a renewing-soon highlight; not linked to the expense tracker.
 - **To-dos** — shared household task list with optional notes, due date, and assignee
   (either person, or unassigned = "either").
-- **Shopping list** — quick add/check-off/clear grocery list.
-- **Calendar** (`/calendar`) — three tabs on one page:
+- **Shopping list** — quick add/check-off/clear grocery list; seeded from the household's original
+  spreadsheet.
+- **Food Inventory** (`/food`) — pantry/freezer inventory by category with quantity steppers and a
+  low-stock flag; seeded from the household's original spreadsheet. Includes a "What can we cook?"
+  button (needs the AI assistant configured) that suggests dishes prioritizing low-stock and
+  perishable items — plan a suggestion on the meal planner, then use its **Confirm cooked** /
+  **Add missing to shopping** buttons to decrement inventory or fill gaps.
+- **Calendar** (`/calendar`) — four tabs on one page:
   - *Calendar* — month view of work shifts and appointments, color-coded per person (or gray for
     events that apply to both), plus recurring weekly work-schedule generation.
-  - *Recycling* — weekly/biweekly collection reminders, surfaced on the home page and living room
-    display when collection is today or tomorrow.
-  - *Travel* — upcoming/past trips with a large animated countdown (icon, milestone track) to the
-    next one.
+  - *Recycling* — a full dated IGEAN collection calendar (not just a weekly pattern), with a
+    prominent "next collection" banner on the home page and living room display, inline
+    add/edit/delete per date, and a PDF re-import flow (the AI assistant parses next year's
+    calendar PDF into a schedule you review before it replaces anything).
+  - *Travel* — upcoming/past trips with a live ticking countdown (days/hours/minutes/seconds) and
+    milestone track to the next one.
+  - *Prayer Times* — today's six prayer times for Aartselaar (Muslim World League method, Hanafi
+    madhab for Asr, via `adhan`) with a live countdown to the next prayer.
 - **Photos** — upload photos; the home page shows them as an auto-cycling slideshow. Manage
   (upload/delete) at `/photos`.
 - **Spotify** (`/spotify`, optional) — connect a Spotify account and pick a playlist to control
   (play/pause/skip/volume) from the dashboard and the living room display. See
   [Spotify setup](#spotify-setup).
-- **Home page** — today's schedule, bills due soon, open to-dos, running balance, travel
-  countdown, weather, and the photo slideshow at a glance.
+- **Assistant** (`/assistant`, optional) — a chat interface grounded in the household's own food
+  inventory, shopping list, calendar, bills, and to-dos, with a visible "can see" panel for
+  transparency. See [AI assistant setup](#ai-assistant-setup).
+- **Home page** — today's schedule, bills due soon, open to-dos, running balance, next recycling
+  collection, live travel countdown, prayer-time countdown, weather, and the photo slideshow at a
+  glance.
 - **Living room display** (`/display`) — a kiosk-style view for a shared tablet/screen: today's
-  weather + forecast, schedule, bills, meal plan, to-dos, shopping list, travel countdown, notes,
-  and Spotify controls, with a screensaver photo slideshow after a few idle minutes.
+  weather + forecast, schedule, bills, meal plan, to-dos, shopping list, next recycling collection,
+  travel and prayer-time countdowns, notes, and Spotify controls, with a screensaver photo
+  slideshow after a few idle minutes.
 
 All currency is shown in euros (Belgian formatting, e.g. `1.234,56 €`) and all dates/times use the
 Belgian `DD/MM/YYYY`, 24-hour format, computed in the `Europe/Brussels` timezone regardless of
@@ -156,6 +183,25 @@ Optional — the rest of the app works fine without it. For local development:
 Playback controls act on whatever device is currently active in Spotify Connect (phone, speaker,
 computer), not the browser itself — open Spotify on a device first if the controls report "no
 active device."
+
+For the production (Render) setup, see [Deploy to Render](#deploy-to-render) above.
+
+## AI assistant setup
+
+Optional — powers both the `/assistant` chat page and the food inventory's "What can we cook?"
+button through one shared service (`src/lib/server/ai.ts`); the rest of the app works fine without
+it.
+
+1. Create an API key at [console.anthropic.com](https://console.anthropic.com).
+2. Add it to `.env`:
+
+   ```bash
+   ANTHROPIC_API_KEY=...
+   ```
+
+3. Restart the app. The assistant only ever reads food inventory, the shopping list, upcoming
+   calendar events, unpaid bills, and open to-dos — never writes — and the chat page shows exactly
+   which of those it can see.
 
 For the production (Render) setup, see [Deploy to Render](#deploy-to-render) above.
 

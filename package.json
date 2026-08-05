@@ -19,12 +19,15 @@
 		"typescript": "^6.0.3"
 	},
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.115.0",
 		"@sveltejs/adapter-node": "^5.5.7",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.3",
+		"adhan": "^4.4.4",
 		"bcryptjs": "^3.0.3",
 		"dotenv": "^17.4.2",
+		"pdf-parse": "^2.4.5",
 		"pg": "^8.22.0",
 		"svelte": "^5.56.1",
 		"tailwindcss": "^4.3.3",

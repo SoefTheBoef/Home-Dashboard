@@ -2,6 +2,7 @@
 	import PhotoSlideshow from '$lib/PhotoSlideshow.svelte';
 	import PersonBadge from '$lib/PersonBadge.svelte';
 	import TravelCountdown from '$lib/TravelCountdown.svelte';
+	import PrayerTimes from '$lib/PrayerTimes.svelte';
 	import SpotifyWidget from '$lib/SpotifyWidget.svelte';
 	import { formatCurrency, formatDate, formatWeekdayShort } from '$lib/format';
 	import type { PageData } from './$types';
@@ -19,9 +20,24 @@
 		data.todaysEvents.length === 0 &&
 			!data.todaysMeal &&
 			data.billsDueToday.length === 0 &&
-			data.wasteToday.length === 0 &&
+			!data.wasteToday &&
 			data.notesToday.length === 0
 	);
+
+	function wasteTypeLabel(code: string): string {
+		return data.wasteTypes.find((t) => t.code === code)?.label.split(' (')[0] ?? code.toUpperCase();
+	}
+
+	function relativeDayLabel(dateStr: string): string {
+		const today = new Date();
+		const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+		const tomorrow = new Date();
+		tomorrow.setDate(tomorrow.getDate() + 1);
+		const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+		if (dateStr === todayStr) return 'Today';
+		if (dateStr === tomorrowStr) return 'Tomorrow';
+		return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long' });
+	}
 </script>
 
 <svelte:head>
@@ -76,18 +92,10 @@
 				</div>
 			{/if}
 
-			{#if data.wasteToday.length > 0}
+			{#if data.wasteToday}
 				<div>
 					<p class="mb-1 text-xs font-semibold uppercase text-gray-400">Collection today</p>
-					<ul class="space-y-1">
-						{#each data.wasteToday as w (w.id)}
-							<li class="flex items-center gap-2 text-sm text-gray-900">
-								<span class="inline-block h-2 w-2 rounded-full" style="background-color:{w.color}"
-								></span>
-								🗑️ {w.label}
-							</li>
-						{/each}
-					</ul>
+					<p class="text-sm text-gray-900">🗑️ {data.wasteToday.types.map(wasteTypeLabel).join(', ')}</p>
 				</div>
 			{/if}
 
@@ -127,8 +135,23 @@
 	</a>
 </div>
 
+{#if data.nextCollection}
+	<a
+		href="/calendar?tab=waste"
+		class="mb-6 block rounded-xl border-2 border-wood-600 bg-wood-600 p-3 text-white transition-colors hover:bg-wood-700"
+	>
+		<p class="text-base font-bold">
+			🗑️ Next: {data.nextCollection.types.map(wasteTypeLabel).join(', ')}, {relativeDayLabel(data.nextCollection.date)}
+		</p>
+	</a>
+{/if}
+
 <div class="mb-6">
 	<TravelCountdown trip={data.nextTrip} size="compact" />
+</div>
+
+<div class="mb-6">
+	<PrayerTimes today={data.prayerTimes.today} nextFajr={data.prayerTimes.nextFajr} />
 </div>
 
 {#if data.weather}

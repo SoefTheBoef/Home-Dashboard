@@ -4,14 +4,16 @@
 	import { createUndoDelete } from '$lib/undoDelete.svelte';
 	import { formatDate } from '$lib/format';
 	import TravelCountdown from '$lib/TravelCountdown.svelte';
+	import PrayerTimes from '$lib/PrayerTimes.svelte';
 	import type { PageData } from './$types';
 
-	let { data }: { data: PageData } = $props();
+	let { data, form }: { data: PageData; form: import('./$types').ActionData } = $props();
 
 	const TABS = [
 		{ id: 'calendar', label: 'Calendar' },
 		{ id: 'waste', label: 'Recycling' },
-		{ id: 'travel', label: 'Travel' }
+		{ id: 'travel', label: 'Travel' },
+		{ id: 'prayer', label: 'Prayer Times' }
 	] as const;
 
 	const undoDeleteEvent = createUndoDelete('?/deleteEvent');
@@ -91,15 +93,40 @@
 	// --- Recycling / waste ---
 	let showWasteForm = $state(false);
 	let editingWasteId = $state<number | null>(null);
+	let showImportForm = $state(false);
 	const undoDeleteWaste = createUndoDelete('?/deleteWaste');
-	const visibleSchedules = $derived(data.wasteSchedules.filter((s) => !undoDeleteWaste.isPending(s.id)));
-	const WASTE_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+	const visibleCollections = $derived(data.wasteCollections.filter((c) => !undoDeleteWaste.isPending(c.id)));
 
-	function relativeLabel(dateStr: string | null): string {
-		if (!dateStr) return '';
+	function wasteTypeLabel(code: string): string {
+		return data.wasteTypes.find((t) => t.code === code)?.label.split(' (')[0] ?? code.toUpperCase();
+	}
+	function wasteTypeColor(code: string): string {
+		return data.wasteTypes.find((t) => t.code === code)?.color ?? '#6b7280';
+	}
+
+	function relativeDayLabel(dateStr: string): string {
 		const today = todayYmd();
+		const tomorrow = new Date(`${today}T00:00:00`);
+		tomorrow.setDate(tomorrow.getDate() + 1);
+		const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
 		if (dateStr === today) return 'Today';
-		return formatDate(dateStr);
+		if (dateStr === tomorrowStr) return 'Tomorrow';
+		return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long' });
+	}
+
+	const collectionsByMonth = $derived.by(() => {
+		const map = new Map<string, typeof data.wasteCollections>();
+		for (const c of visibleCollections) {
+			const key = c.date.slice(0, 7);
+			if (!map.has(key)) map.set(key, []);
+			map.get(key)!.push(c);
+		}
+		return map;
+	});
+
+	function monthLabel(key: string): string {
+		const [y, m] = key.split('-').map(Number);
+		return `${MONTH_NAMES[(m as number) - 1]} ${y}`;
 	}
 
 	// --- Travel ---
@@ -139,101 +166,181 @@
 </nav>
 
 {#if data.tab === 'waste'}
-	<div class="mb-4 flex items-center justify-between">
-		<h2 class="text-sm font-semibold text-gray-900">Recycling & Waste Collection</h2>
-		<button type="button" onclick={() => (showWasteForm = !showWasteForm)} class="btn-primary">
-			{showWasteForm ? 'Cancel' : '+ Add collection'}
-		</button>
+	{#if data.nextCollection}
+		<div class="mb-4 rounded-xl border-2 border-wood-600 bg-wood-600 p-4 text-white">
+			<p class="text-lg font-bold">
+				🗑️ Next: {data.nextCollection.types.map(wasteTypeLabel).join(', ')}, {relativeDayLabel(data.nextCollection.date)}
+			</p>
+			<p class="text-xs text-white/80">{formatDate(data.nextCollection.date)}</p>
+		</div>
+	{/if}
+
+	<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+		<h2 class="text-sm font-semibold text-gray-900">Collection calendar</h2>
+		<div class="flex gap-2">
+			<button
+				type="button"
+				onclick={() => {
+					showImportForm = !showImportForm;
+					showWasteForm = false;
+				}}
+				class="btn-outline"
+			>
+				{showImportForm ? 'Cancel' : 'Re-import PDF'}
+			</button>
+			<button
+				type="button"
+				onclick={() => {
+					showWasteForm = !showWasteForm;
+					showImportForm = false;
+				}}
+				class="btn-primary"
+			>
+				{showWasteForm ? 'Cancel' : '+ Add / correct a date'}
+			</button>
+		</div>
 	</div>
+
+	{#if showImportForm}
+		<div class="mb-4 rounded-lg border border-gray-200 bg-white p-3">
+			<p class="mb-2 text-xs text-gray-500">
+				Upload next year's IGEAN collection calendar PDF — the assistant reads it and proposes a
+				full schedule, which you can review below before it replaces anything.
+			</p>
+			<form
+				method="POST"
+				action="?/importWastePdf"
+				enctype="multipart/form-data"
+				use:enhance={() => async ({ update }) => {
+					await update();
+				}}
+				class="flex flex-wrap items-center gap-2"
+			>
+				<input type="file" name="pdf" accept="application/pdf" required class="input flex-1" />
+				<button type="submit" class="btn-primary">Parse PDF</button>
+			</form>
+			{#if form?.importError}
+				<p class="mt-2 text-xs text-red-600">{form.importError}</p>
+			{/if}
+
+			{#if form?.importPreview}
+				<div class="mt-4 border-t border-gray-200 pt-3">
+					<p class="mb-2 text-sm font-medium text-gray-900">
+						Parsed {form.importPreview.entries.length} collection dates for {form.importPreview.year}
+						— spot-check against the PDF before confirming:
+					</p>
+					<ul class="mb-3 max-h-64 space-y-1 overflow-y-auto rounded-lg bg-gray-50 p-2 text-xs">
+						{#each form.importPreview.entries as e (e.date)}
+							<li class="flex justify-between">
+								<span>{formatDate(e.date)} ({new Date(`${e.date}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'short' })})</span>
+								<span class="text-gray-500">{e.types.map(wasteTypeLabel).join(', ')}</span>
+							</li>
+						{/each}
+					</ul>
+					<form
+						method="POST"
+						action="?/confirmWasteImport"
+						use:enhance={() => async ({ update }) => {
+							await update();
+							showImportForm = false;
+						}}
+					>
+						<input type="hidden" name="payload" value={JSON.stringify(form.importPreview)} />
+						<button type="submit" class="btn-primary">
+							Confirm & replace {form.importPreview.year} schedule
+						</button>
+					</form>
+				</div>
+			{/if}
+		</div>
+	{/if}
 
 	{#if showWasteForm}
 		<form
 			method="POST"
-			action="?/createWaste"
+			action="?/upsertWaste"
 			use:enhance={() => async ({ update }) => {
 				await update();
 				showWasteForm = false;
 			}}
-			class="mb-4 grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-white p-3 sm:grid-cols-2"
+			class="mb-4 grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-white p-3"
 		>
-			<input name="label" placeholder="Label (e.g. General waste)" required class="input" />
-			<select name="weekday" class="input">
-				{#each WASTE_WEEKDAY_NAMES as name, i (name)}
-					<option value={i}>{name}</option>
+			<input type="date" name="date" value={todayYmd()} required class="input" />
+			<div class="flex flex-wrap gap-3 rounded-lg bg-gray-50 p-2 text-xs text-gray-600">
+				{#each data.wasteTypes as t (t.code)}
+					<label class="flex items-center gap-1">
+						<input type="checkbox" name="types" value={t.code} />
+						{wasteTypeLabel(t.code)}
+					</label>
 				{/each}
-			</select>
-			<select name="cadence" class="input">
-				<option value="weekly">Weekly</option>
-				<option value="biweekly">Every 2 weeks</option>
-			</select>
-			<input type="date" name="anchor_date" value={todayYmd()} required class="input" />
-			<p class="col-span-2 -mt-1 text-xs text-gray-500">
-				For "every 2 weeks", the reference date should be one of the actual collection dates.
+			</div>
+			<p class="-mt-1 text-xs text-gray-500">
+				Adding a date that already has an entry overwrites its types — handy for correcting a
+				wrong date's type list.
 			</p>
-			<input type="color" name="color" value="#6b7280" class="input col-span-2 h-10" />
-			<button type="submit" class="btn-primary col-span-2 py-2 text-sm">Save</button>
+			<button type="submit" class="btn-primary py-2 text-sm">Save</button>
 		</form>
 	{/if}
 
-	{#if visibleSchedules.length === 0}
-		<p class="empty-state">No collections set up yet — add general waste or recycling above.</p>
+	{#if visibleCollections.length === 0}
+		<p class="empty-state">No collection dates yet — add one above or re-import the PDF.</p>
 	{:else}
-		<ul class="space-y-2">
-			{#each visibleSchedules as s (s.id)}
-				<li class="rounded-lg border border-gray-200 p-3">
-					{#if editingWasteId === s.id}
-						<form
-							method="POST"
-							action="?/updateWaste"
-							use:enhance={() => async ({ update }) => {
-								await update();
-								editingWasteId = null;
-							}}
-							class="grid grid-cols-1 gap-2 sm:grid-cols-2"
-						>
-							<input type="hidden" name="id" value={s.id} />
-							<input name="label" value={s.label} required class="input" />
-							<select name="weekday" class="input" value={s.weekday}>
-								{#each WASTE_WEEKDAY_NAMES as name, i (name)}
-									<option value={i}>{name}</option>
+		{#each [...collectionsByMonth.entries()] as [monthKey, entries] (monthKey)}
+			<h3 class="mb-2 mt-4 text-xs font-semibold uppercase text-gray-400">{monthLabel(monthKey)}</h3>
+			<ul class="space-y-1">
+				{#each entries as c (c.id)}
+					<li class="rounded-lg border border-gray-200 p-2">
+						{#if editingWasteId === c.id}
+							<form
+								method="POST"
+								action="?/upsertWaste"
+								use:enhance={() => async ({ update }) => {
+									await update();
+									editingWasteId = null;
+								}}
+								class="flex flex-wrap items-center gap-2"
+							>
+								<input type="hidden" name="date" value={c.date} />
+								<span class="text-xs font-medium text-gray-700">{formatDate(c.date)}</span>
+								{#each data.wasteTypes as t (t.code)}
+									<label class="flex items-center gap-1 text-xs text-gray-600">
+										<input type="checkbox" name="types" value={t.code} checked={c.types.includes(t.code)} />
+										{wasteTypeLabel(t.code)}
+									</label>
 								{/each}
-							</select>
-							<select name="cadence" class="input" value={s.cadence}>
-								<option value="weekly">Weekly</option>
-								<option value="biweekly">Every 2 weeks</option>
-							</select>
-							<input type="date" name="anchor_date" value={s.anchor_date} required class="input" />
-							<input type="color" name="color" value={s.color} class="input col-span-2 h-10" />
-							<div class="col-span-2 flex gap-2">
 								<button type="submit" class="btn-primary">Save</button>
 								<button type="button" onclick={() => (editingWasteId = null)} class="btn-outline">Cancel</button>
-							</div>
-						</form>
-					{:else}
-						<div class="flex items-center justify-between gap-2">
-							<div class="flex items-center gap-3">
-								<span class="inline-block h-3 w-3 rounded-full" style="background-color:{s.color}"></span>
-								<div>
-									<p class="text-sm font-medium text-gray-900">{s.label}</p>
-									<p class="text-xs text-gray-500">
-										{WASTE_WEEKDAY_NAMES[s.weekday]} · {s.cadence === 'weekly' ? 'Weekly' : 'Every 2 weeks'}
-										{#if s.next_date}
-											· Next: {relativeLabel(s.next_date)}
-										{/if}
-									</p>
+							</form>
+						{:else}
+							<div class="flex items-center justify-between gap-2">
+								<div class="flex items-center gap-2">
+									<span class="w-24 shrink-0 text-xs font-medium text-gray-700">
+										{new Date(`${c.date}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'short' })}
+										{formatDate(c.date)}
+									</span>
+									<div class="flex flex-wrap gap-1">
+										{#each c.types as code (code)}
+											<span
+												class="rounded px-1.5 py-0.5 text-[10px] font-medium text-white"
+												style="background-color:{wasteTypeColor(code)}"
+											>
+												{wasteTypeLabel(code)}
+											</span>
+										{/each}
+									</div>
+								</div>
+								<div class="flex shrink-0 gap-1">
+									<button type="button" onclick={() => (editingWasteId = c.id)} class="btn-outline">Edit</button>
+									<button type="button" onclick={() => undoDeleteWaste.requestDelete(c.id, 'Collection date')} class="btn-danger">
+										Delete
+									</button>
 								</div>
 							</div>
-							<div class="flex shrink-0 gap-1">
-								<button type="button" onclick={() => (editingWasteId = s.id)} class="btn-outline">Edit</button>
-								<button type="button" onclick={() => undoDeleteWaste.requestDelete(s.id, 'Collection')} class="btn-danger">
-									Delete
-								</button>
-							</div>
-						</div>
-					{/if}
-				</li>
-			{/each}
-		</ul>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/each}
 	{/if}
 {:else if data.tab === 'travel'}
 	<div class="mb-6">
@@ -330,6 +437,12 @@
 			{/each}
 		</ul>
 	{/if}
+{:else if data.tab === 'prayer'}
+	<PrayerTimes today={data.prayerTimes.today} nextFajr={data.prayerTimes.nextFajr} />
+	<p class="mt-3 text-xs text-gray-500">
+		Calculated for Aartselaar (Muslim World League method, Hanafi madhab for Asr) — times update
+		automatically each day.
+	</p>
 {:else}
 	<div class="mb-4 flex items-center justify-between">
 		<h2 class="text-xl font-semibold text-gray-900">

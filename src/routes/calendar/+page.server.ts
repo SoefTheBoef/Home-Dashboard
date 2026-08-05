@@ -5,7 +5,16 @@ import { getAllUsers } from '$lib/server/users';
 import { getMonthGrid, todayYmd, ymd } from '$lib/calendar-date';
 import { ensureRecurringEvents } from '$lib/server/event-series';
 import { logActivity } from '$lib/server/activity';
-import { getNextCollectionDate, listWasteSchedules } from '$lib/server/waste';
+import {
+	deleteWasteCollection,
+	getNextCollection,
+	listWasteCollections,
+	replaceYear,
+	upsertWasteCollection,
+	WASTE_TYPES
+} from '$lib/server/waste';
+import { getTodayPrayerTimes } from '$lib/server/prayer-times';
+import { parseWasteCalendarText } from '$lib/server/ai';
 
 export interface EventRow {
 	id: number;
@@ -74,11 +83,8 @@ export const load: PageServerLoad = async ({ url }) => {
 		.all()) as unknown as EventSeriesRow[];
 
 	const today = todayYmd();
-	const wasteSchedulesRaw = await listWasteSchedules();
-	const wasteSchedules = wasteSchedulesRaw.map((s) => ({
-		...s,
-		next_date: getNextCollectionDate(s, today)
-	}));
+	const wasteCollections = await listWasteCollections();
+	const nextCollection = await getNextCollection(today);
 
 	const trips = (await db
 		.prepare('SELECT id, name, start_date, end_date, notes FROM trips ORDER BY start_date ASC')
@@ -95,9 +101,12 @@ export const load: PageServerLoad = async ({ url }) => {
 		events,
 		series,
 		users: await getAllUsers(),
-		wasteSchedules,
+		wasteCollections,
+		nextCollection,
+		wasteTypes: WASTE_TYPES,
 		trips,
-		nextTrip
+		nextTrip,
+		prayerTimes: getTodayPrayerTimes()
 	};
 };
 
@@ -285,45 +294,16 @@ export const actions: Actions = {
 		return { success: true };
 	},
 
-	createWaste: async ({ request }) => {
+	upsertWaste: async ({ request }) => {
 		const form = await request.formData();
-		const label = String(form.get('label') ?? '').trim();
-		const weekday = Number(form.get('weekday'));
-		const cadence = String(form.get('cadence') ?? 'weekly');
-		const anchorDate = String(form.get('anchor_date') ?? '');
-		const color = String(form.get('color') ?? '').trim() || '#6b7280';
+		const date = String(form.get('date') ?? '');
+		const types = form.getAll('types').map(String);
 
-		if (!label || Number.isNaN(weekday) || !anchorDate) {
-			return fail(400, { error: 'Label, weekday and a reference date are required.' });
+		if (!date || types.length === 0) {
+			return fail(400, { error: 'A date and at least one collection type are required.' });
 		}
 
-		await db
-			.prepare(
-				'INSERT INTO waste_schedules (label, weekday, cadence, anchor_date, color) VALUES (?, ?, ?, ?, ?)'
-			)
-			.run(label, weekday, cadence, anchorDate, color);
-
-		return { success: true };
-	},
-
-	updateWaste: async ({ request }) => {
-		const form = await request.formData();
-		const id = Number(form.get('id'));
-		const label = String(form.get('label') ?? '').trim();
-		const weekday = Number(form.get('weekday'));
-		const cadence = String(form.get('cadence') ?? 'weekly');
-		const anchorDate = String(form.get('anchor_date') ?? '');
-		const color = String(form.get('color') ?? '').trim() || '#6b7280';
-
-		if (!id || !label || Number.isNaN(weekday) || !anchorDate) {
-			return fail(400, { error: 'Label, weekday and a reference date are required.' });
-		}
-
-		await db
-			.prepare(
-				'UPDATE waste_schedules SET label = ?, weekday = ?, cadence = ?, anchor_date = ?, color = ? WHERE id = ?'
-			)
-			.run(label, weekday, cadence, anchorDate, color, id);
+		await upsertWasteCollection(date, types);
 
 		return { success: true };
 	},
@@ -332,9 +312,48 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const id = Number(form.get('id'));
 		if (id) {
-			await db.prepare('DELETE FROM waste_schedules WHERE id = ?').run(id);
+			await deleteWasteCollection(id);
 		}
 		return { success: true };
+	},
+
+	importWastePdf: async ({ request }) => {
+		const form = await request.formData();
+		const file = form.get('pdf');
+
+		if (!(file instanceof File) || file.size === 0) {
+			return fail(400, { importError: 'Choose a PDF file first.' });
+		}
+
+		try {
+			const { PDFParse } = await import('pdf-parse');
+			const parser = new PDFParse({ data: Buffer.from(await file.arrayBuffer()) });
+			const { text } = await parser.getText();
+			await parser.destroy();
+
+			const preview = await parseWasteCalendarText(text);
+			return { importPreview: preview };
+		} catch (err) {
+			return fail(502, {
+				importError: err instanceof Error ? err.message : 'Could not read that PDF — try again.'
+			});
+		}
+	},
+
+	confirmWasteImport: async ({ request }) => {
+		const form = await request.formData();
+		const payload = String(form.get('payload') ?? '');
+
+		try {
+			const { year, entries } = JSON.parse(payload) as {
+				year: number;
+				entries: { date: string; types: string[] }[];
+			};
+			await replaceYear(year, entries);
+			return { success: true, importedYear: year };
+		} catch {
+			return fail(400, { importError: 'That preview data looked corrupted — try re-importing.' });
+		}
 	},
 
 	createTrip: async ({ request }) => {

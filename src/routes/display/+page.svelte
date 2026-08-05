@@ -5,6 +5,7 @@
 	import PersonBadge from '$lib/PersonBadge.svelte';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 	import TravelCountdown from '$lib/TravelCountdown.svelte';
+	import PrayerTimes from '$lib/PrayerTimes.svelte';
 	import SpotifyWidget from '$lib/SpotifyWidget.svelte';
 	import { formatCurrency, formatDate, formatLongDate, formatWeekdayShort, todayYmdBrussels } from '$lib/format';
 	import type { PageData } from './$types';
@@ -41,6 +42,20 @@
 
 	function brusselsTime(d: Date): string {
 		return d.toLocaleTimeString('en-GB', { timeZone: 'Europe/Brussels', hour: '2-digit', minute: '2-digit', hour12: false });
+	}
+
+	function wasteTypeLabel(code: string): string {
+		return data.wasteTypes.find((t) => t.code === code)?.label.split(' (')[0] ?? code.toUpperCase();
+	}
+
+	function relativeDayLabel(dateStr: string): string {
+		const today = todayYmdBrussels();
+		const tomorrow = new Date(`${today}T00:00:00`);
+		tomorrow.setDate(tomorrow.getDate() + 1);
+		const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+		if (dateStr === today) return 'Today';
+		if (dateStr === tomorrowStr) return 'Tomorrow';
+		return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long' });
 	}
 
 	let clock = $state(new Date());
@@ -136,14 +151,11 @@
 			</div>
 		{/if}
 
-		{#if data.wasteToday.length > 0 || data.wasteTomorrow.length > 0}
+		{#if data.nextCollection}
 			<div class="mb-6 rounded-xl border-2 border-wood-600 bg-wood-600 p-4 text-white dark:border-wood-500 dark:bg-wood-700">
-				{#each data.wasteToday as w (w.id)}
-					<p class="text-xl font-bold">🗑️ {w.label} collected TODAY</p>
-				{/each}
-				{#each data.wasteTomorrow as w (w.id)}
-					<p class="text-xl font-bold">🗑️ {w.label} collected tomorrow</p>
-				{/each}
+				<p class="text-xl font-bold">
+					🗑️ Next: {data.nextCollection.types.map(wasteTypeLabel).join(', ')}, {relativeDayLabel(data.nextCollection.date)}
+				</p>
 			</div>
 		{/if}
 
@@ -258,6 +270,10 @@
 			</div>
 
 			<TravelCountdown trip={data.nextTrip} size="compact" />
+		</div>
+
+		<div class="mt-4">
+			<PrayerTimes today={data.prayerTimes.today} nextFajr={data.prayerTimes.nextFajr} />
 		</div>
 
 		<div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">

@@ -2,9 +2,10 @@ import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { listPhotos } from '$lib/server/photos';
 import { getWeather } from '$lib/server/weather';
-import { getCollectionsOn } from '$lib/server/waste';
+import { getCollectionOn, getNextCollection, WASTE_TYPES } from '$lib/server/waste';
 import { listNotes } from '$lib/server/notes';
 import { ensureRecurringEvents } from '$lib/server/event-series';
+import { getTodayPrayerTimes } from '$lib/server/prayer-times';
 import { addDays, todayYmd } from '$lib/calendar-date';
 
 function inNDaysYmd(n: number): string {
@@ -114,7 +115,10 @@ export const load: PageServerLoad = async () => {
 		photos: (await listPhotos()).slice(0, 20),
 		weather: await getWeather(),
 		todaysMeal: todaysMeal ?? null,
-		wasteToday: await getCollectionsOn(today),
-		notesToday
+		wasteToday: await getCollectionOn(today),
+		nextCollection: await getNextCollection(today),
+		wasteTypes: WASTE_TYPES,
+		notesToday,
+		prayerTimes: getTodayPrayerTimes()
 	};
 };

@@ -14,10 +14,12 @@
 		{ href: '/finances', label: 'Finances' },
 		{ href: '/todos', label: 'To-Dos' },
 		{ href: '/shopping', label: 'Shopping' },
+		{ href: '/food', label: 'Food' },
 		{ href: '/meals', label: 'Meals' },
 		{ href: '/notes', label: 'Notes' },
 		{ href: '/photos', label: 'Photos' },
 		{ href: '/spotify', label: 'Spotify' },
+		{ href: '/assistant', label: 'Assistant' },
 		{ href: '/emergency', label: 'Emergency Info' }
 	];
 

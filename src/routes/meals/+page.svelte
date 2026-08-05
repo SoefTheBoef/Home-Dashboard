@@ -96,6 +96,38 @@
 							{#if entry.ingredients}
 								<form
 									method="POST"
+									action="?/confirmCooked"
+									use:enhance={() => async ({ update, result }) => {
+										await update();
+										if (result.type === 'success') {
+											const decremented = (result.data?.decremented as number) ?? 0;
+											toasts.info(
+												decremented > 0
+													? `Decremented ${decremented} inventory item${decremented === 1 ? '' : 's'}`
+													: 'No matching inventory items found'
+											);
+										}
+									}}
+								>
+									<input type="hidden" name="id" value={entry.id} />
+									<button type="submit" class="btn-outline">Confirm cooked</button>
+								</form>
+								<form
+									method="POST"
+									action="?/addMissingToShopping"
+									use:enhance={() => async ({ update, result }) => {
+										await update();
+										if (result.type === 'success') {
+											const added = (result.data?.added as number) ?? 0;
+											toasts.info(added > 0 ? `Added ${added} missing item${added === 1 ? '' : 's'} to shopping list` : 'Nothing missing');
+										}
+									}}
+								>
+									<input type="hidden" name="id" value={entry.id} />
+									<button type="submit" class="btn-outline">Add missing to shopping</button>
+								</form>
+								<form
+									method="POST"
 									action="?/addIngredientsToShopping"
 									use:enhance={() => async ({ update }) => {
 										await update();
@@ -103,7 +135,7 @@
 									}}
 								>
 									<input type="hidden" name="id" value={entry.id} />
-									<button type="submit" class="btn-outline">Add to shopping list</button>
+									<button type="submit" class="btn-outline">Add all to shopping list</button>
 								</form>
 							{/if}
 							<button type="button" onclick={() => undoDelete.requestDelete(entry.id, 'Meal')} class="btn-danger">

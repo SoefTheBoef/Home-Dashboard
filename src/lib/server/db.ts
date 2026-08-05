@@ -1,6 +1,8 @@
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import { env } from '$env/dynamic/private';
+import { seedWasteCollectionsIfEmpty } from './waste';
+import { seedFoodInventoryIfEmpty, seedShoppingListIfEmpty } from './food';
 
 if (!env.DATABASE_URL) {
 	throw new Error(
@@ -200,14 +202,23 @@ async function setup(): Promise<void> {
 		  created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 		);
 
-		CREATE TABLE IF NOT EXISTS waste_schedules (
+		DROP TABLE IF EXISTS waste_schedules;
+
+		CREATE TABLE IF NOT EXISTS waste_collections (
 		  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-		  label TEXT NOT NULL,
-		  weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
-		  cadence TEXT NOT NULL DEFAULT 'weekly' CHECK (cadence IN ('weekly','biweekly')),
-		  anchor_date TEXT NOT NULL,
-		  color TEXT NOT NULL DEFAULT '#6b7280',
+		  date TEXT NOT NULL UNIQUE,
+		  types TEXT NOT NULL,
 		  created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+		);
+
+		CREATE TABLE IF NOT EXISTS food_inventory (
+		  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		  category TEXT NOT NULL,
+		  item TEXT NOT NULL,
+		  quantity REAL NOT NULL DEFAULT 0,
+		  low_stock INTEGER NOT NULL DEFAULT 0,
+		  created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+		  updated_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 		);
 
 		CREATE TABLE IF NOT EXISTS subscriptions (
@@ -259,6 +270,9 @@ async function setup(): Promise<void> {
 	`);
 
 	await seedInitialUsers();
+	await seedWasteCollectionsIfEmpty();
+	await seedFoodInventoryIfEmpty();
+	await seedShoppingListIfEmpty();
 }
 
 /**

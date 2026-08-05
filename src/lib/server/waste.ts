@@ -1,44 +1,95 @@
 import { db } from './db';
+import { WASTE_COLLECTIONS_2026 } from './seed-data/waste-collections-2026';
 
-export interface WasteScheduleRow {
-	id: number;
+export interface WasteTypeInfo {
+	code: string;
 	label: string;
-	weekday: number;
-	cadence: 'weekly' | 'biweekly';
-	anchor_date: string;
 	color: string;
 }
 
-export async function listWasteSchedules(): Promise<WasteScheduleRow[]> {
-	return (await db
-		.prepare('SELECT id, label, weekday, cadence, anchor_date, color FROM waste_schedules ORDER BY weekday ASC')
-		.all()) as unknown as WasteScheduleRow[];
+/** IGEAN legend — see the calendar PDF's LEGENDE strip. */
+export const WASTE_TYPES: WasteTypeInfo[] = [
+	{ code: 'hv', label: 'Huisvuil (general waste)', color: '#6b7280' },
+	{ code: 'gft', label: 'GFT (green/organic waste)', color: '#65a30d' },
+	{ code: 'pmd', label: 'PMD (plastic/metal/cartons)', color: '#2563eb' },
+	{ code: 'pk', label: 'Papier & karton (paper/cardboard)', color: '#ea580c' },
+	{ code: 'sh', label: 'Snoeihout (pruning wood)', color: '#92400e' },
+	{ code: 'gv', label: 'Grofvuil (bulk waste)', color: '#374151' },
+	{ code: 'tex', label: 'Textiel (textile)', color: '#db2777' },
+	{ code: 'kerstboom', label: 'Kerstboom (Christmas tree)', color: '#16a34a' }
+];
+
+const TYPE_INFO_BY_CODE = new Map(WASTE_TYPES.map((t) => [t.code, t]));
+
+export function wasteTypeInfo(code: string): WasteTypeInfo {
+	return TYPE_INFO_BY_CODE.get(code) ?? { code, label: code, color: '#6b7280' };
 }
 
-export function isCollectionDate(schedule: WasteScheduleRow, dateStr: string): boolean {
-	const d = new Date(`${dateStr}T00:00:00`);
-	if (d.getDay() !== schedule.weekday) return false;
-	if (schedule.cadence === 'weekly') return true;
-
-	const anchor = new Date(`${schedule.anchor_date}T00:00:00`);
-	const diffDays = Math.round((d.getTime() - anchor.getTime()) / 86_400_000);
-	const diffWeeks = diffDays / 7;
-	return Number.isInteger(diffWeeks) && Math.abs(Math.round(diffWeeks)) % 2 === 0;
+export interface WasteCollectionRow {
+	id: number;
+	date: string;
+	types: string[];
 }
 
-export async function getCollectionsOn(dateStr: string): Promise<WasteScheduleRow[]> {
-	const schedules = await listWasteSchedules();
-	return schedules.filter((s) => isCollectionDate(s, dateStr));
+interface WasteCollectionDbRow {
+	id: number;
+	date: string;
+	types: string;
 }
 
-/** Next occurrence of this schedule on or after fromDateStr, searching up to 14 days ahead. */
-export function getNextCollectionDate(schedule: WasteScheduleRow, fromDateStr: string): string | null {
-	const from = new Date(`${fromDateStr}T00:00:00`);
-	for (let i = 0; i < 14; i++) {
-		const d = new Date(from);
-		d.setDate(d.getDate() + i);
-		const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-		if (isCollectionDate(schedule, dateStr)) return dateStr;
+function fromDbRow(row: WasteCollectionDbRow): WasteCollectionRow {
+	return { id: row.id, date: row.date, types: row.types.split(',').filter(Boolean) };
+}
+
+export async function listWasteCollections(): Promise<WasteCollectionRow[]> {
+	const rows = (await db
+		.prepare('SELECT id, date, types FROM waste_collections ORDER BY date ASC')
+		.all()) as unknown as WasteCollectionDbRow[];
+	return rows.map(fromDbRow);
+}
+
+export async function getCollectionOn(dateStr: string): Promise<WasteCollectionRow | null> {
+	const row = (await db.prepare('SELECT id, date, types FROM waste_collections WHERE date = ?').get(dateStr)) as
+		| WasteCollectionDbRow
+		| undefined;
+	return row ? fromDbRow(row) : null;
+}
+
+export async function getNextCollection(fromDateStr: string): Promise<WasteCollectionRow | null> {
+	const row = (await db
+		.prepare('SELECT id, date, types FROM waste_collections WHERE date >= ? ORDER BY date ASC LIMIT 1')
+		.get(fromDateStr)) as WasteCollectionDbRow | undefined;
+	return row ? fromDbRow(row) : null;
+}
+
+export async function upsertWasteCollection(date: string, types: string[]): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO waste_collections (date, types) VALUES (?, ?)
+			 ON CONFLICT (date) DO UPDATE SET types = excluded.types`
+		)
+		.run(date, types.join(','));
+}
+
+export async function deleteWasteCollection(id: number): Promise<void> {
+	await db.prepare('DELETE FROM waste_collections WHERE id = ?').run(id);
+}
+
+/** Replaces every collection date that falls within `year` — used after a fresh PDF import. */
+export async function replaceYear(year: number, entries: { date: string; types: string[] }[]): Promise<void> {
+	await db.prepare('DELETE FROM waste_collections WHERE date LIKE ?').run(`${year}-%`);
+	for (const entry of entries) {
+		await upsertWasteCollection(entry.date, entry.types);
 	}
-	return null;
+}
+
+export async function seedWasteCollectionsIfEmpty(): Promise<void> {
+	const { count } = (await db.prepare('SELECT COUNT(*) as count FROM waste_collections').get()) as {
+		count: number;
+	};
+	if (count > 0) return;
+
+	for (const entry of WASTE_COLLECTIONS_2026) {
+		await upsertWasteCollection(entry.date, entry.types);
+	}
 }

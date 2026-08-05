@@ -29,6 +29,31 @@
 		return '✈️';
 	}
 
+	function pad(n: number): string {
+		return String(n).padStart(2, '0');
+	}
+
+	// Live ticking countdown, re-derived every second from the trip's start-of-day local time.
+	let now = $state(new Date());
+	$effect(() => {
+		const timer = setInterval(() => (now = new Date()), 1000);
+		return () => clearInterval(timer);
+	});
+
+	const remainingMs = $derived(
+		trip ? new Date(`${trip.start_date}T00:00:00`).getTime() - now.getTime() : 0
+	);
+	const countdown = $derived.by(() => {
+		const ms = Math.max(0, remainingMs);
+		const totalSeconds = Math.floor(ms / 1000);
+		return {
+			days: Math.floor(totalSeconds / 86_400),
+			hours: Math.floor((totalSeconds % 86_400) / 3600),
+			minutes: Math.floor((totalSeconds % 3600) / 60),
+			seconds: totalSeconds % 60
+		};
+	});
+
 	const days = $derived(trip ? daysUntil(trip.start_date) : 0);
 	const isToday = $derived(days <= 0);
 	const icon = $derived(trip ? pickIcon(trip.name) : '✈️');
@@ -43,9 +68,13 @@
 			<span class="text-2xl">{icon}</span>
 			<div>
 				<p class="text-xs text-gray-500">{trip.name}</p>
-				<p class="text-lg font-bold text-wood-600 dark:text-wood-300">
-					{isToday ? 'Today!' : `${days}d`}
-				</p>
+				{#if isToday}
+					<p class="text-lg font-bold text-wood-600 dark:text-wood-300">Today!</p>
+				{:else}
+					<p class="font-mono text-lg font-bold tabular-nums text-wood-600 dark:text-wood-300">
+						{countdown.days}d {pad(countdown.hours)}:{pad(countdown.minutes)}:{pad(countdown.seconds)}
+					</p>
+				{/if}
 			</div>
 		</a>
 	{:else}
@@ -61,20 +90,26 @@
 						</p>
 					</div>
 				</div>
-				<div class="text-center">
-					{#if isToday}
+				{#if isToday}
+					<div class="text-center">
 						<p class="text-4xl font-black text-wood-600 dark:text-wood-300">🎉</p>
 						<p class="text-sm font-semibold text-wood-600 dark:text-wood-300">Happening now!</p>
-					{:else}
-						<p class="text-5xl font-black leading-none text-wood-600 dark:text-wood-300">{days}</p>
-						<p class="text-xs font-semibold uppercase tracking-wide text-gray-500">
-							{days === 1 ? 'day to go' : 'days to go'}
-						</p>
-					{/if}
-				</div>
+					</div>
+				{/if}
 			</div>
 
 			{#if !isToday}
+				<div class="mt-4 grid grid-cols-4 gap-2 text-center">
+					{#each [['days', countdown.days], ['hours', countdown.hours], ['min', countdown.minutes], ['sec', countdown.seconds]] as [label, value] (label)}
+						<div>
+							<p class="font-mono text-3xl font-black leading-none tabular-nums text-wood-600 sm:text-4xl dark:text-wood-300">
+								{pad(Number(value))}
+							</p>
+							<p class="mt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+						</div>
+					{/each}
+				</div>
+
 				<div class="mt-4 flex items-center">
 					{#each milestoneTrack as m, i (m)}
 						{@const reached = reachedMilestones.includes(m)}

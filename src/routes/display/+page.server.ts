@@ -5,7 +5,8 @@ import { listPhotos } from '$lib/server/photos';
 import { getWeather } from '$lib/server/weather';
 import { listNotes } from '$lib/server/notes';
 import { listEmergencyInfo } from '$lib/server/emergency-info';
-import { getCollectionsOn } from '$lib/server/waste';
+import { getNextCollection, WASTE_TYPES } from '$lib/server/waste';
+import { getTodayPrayerTimes } from '$lib/server/prayer-times';
 import { ensureRecurringBills } from '$lib/server/bills';
 import { ensureRecurringEvents } from '$lib/server/event-series';
 import { addDays, todayYmd } from '$lib/calendar-date';
@@ -16,7 +17,6 @@ export const load: PageServerLoad = async () => {
 	await ensureRecurringEvents();
 
 	const today = todayYmd();
-	const tomorrow = addDays(today, 1);
 	const soon = addDays(today, 7);
 
 	const todaysEvents = (await db
@@ -101,8 +101,9 @@ export const load: PageServerLoad = async () => {
 		weather: await getWeather(),
 		notes: await listNotes(5),
 		wifiInfo: allEmergencyInfo.filter((e) => e.category === 'wifi'),
-		wasteToday: await getCollectionsOn(today),
-		wasteTomorrow: await getCollectionsOn(tomorrow)
+		nextCollection: await getNextCollection(today),
+		wasteTypes: WASTE_TYPES,
+		prayerTimes: getTodayPrayerTimes()
 	};
 };
 
