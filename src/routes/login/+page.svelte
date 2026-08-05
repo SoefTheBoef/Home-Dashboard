@@ -4,6 +4,11 @@
 
 	let { form }: { form: ActionData } = $props();
 	let loading = $state(false);
+	let timedOut = $state(false);
+
+	function timeout(ms: number): Promise<'timeout'> {
+		return new Promise((resolve) => setTimeout(() => resolve('timeout'), ms));
+	}
 </script>
 
 <svelte:head>
@@ -19,8 +24,12 @@
 			method="POST"
 			use:enhance={() => {
 				loading = true;
+				timedOut = false;
 				return async ({ update }) => {
-					await update();
+					// The server enforces its own query/connection timeouts, but this is a safety net —
+					// if something upstream (proxy, network) still hangs, don't spin forever.
+					const result = await Promise.race([update().then(() => 'done' as const), timeout(15_000)]);
+					if (result === 'timeout') timedOut = true;
 					loading = false;
 				};
 			}}
@@ -50,7 +59,11 @@
 				/>
 			</div>
 
-			{#if form?.error}
+			{#if timedOut}
+				<p class="text-sm font-medium text-gray-800">
+					That's taking longer than expected — please try again.
+				</p>
+			{:else if form?.error}
 				<p class="text-sm font-medium text-gray-800">{form.error}</p>
 			{/if}
 

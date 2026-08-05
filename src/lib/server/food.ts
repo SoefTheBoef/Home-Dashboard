@@ -1,4 +1,4 @@
-import { db } from './db';
+import { buildValuesList, db } from './db';
 import { FOOD_INVENTORY_SEED, SHOPPING_LIST_SEED } from './seed-data/food-inventory';
 
 export interface FoodInventoryRow {
@@ -19,24 +19,24 @@ export async function seedFoodInventoryIfEmpty(): Promise<void> {
 	const { count } = (await db.prepare('SELECT COUNT(*) as count FROM food_inventory').get()) as {
 		count: number;
 	};
-	if (count > 0) return;
+	if (count > 0 || FOOD_INVENTORY_SEED.length === 0) return;
 
-	const insert = db.prepare(
-		'INSERT INTO food_inventory (category, item, quantity, low_stock) VALUES (?, ?, ?, ?)'
+	const { placeholders, params } = buildValuesList(
+		FOOD_INVENTORY_SEED.map((row) => [row.category, row.item, row.quantity, row.lowStock ? 1 : 0])
 	);
-	for (const row of FOOD_INVENTORY_SEED) {
-		await insert.run(row.category, row.item, row.quantity, row.lowStock ? 1 : 0);
-	}
+	await db
+		.prepare(`INSERT INTO food_inventory (category, item, quantity, low_stock) VALUES ${placeholders}`)
+		.run(...params);
 }
 
 export async function seedShoppingListIfEmpty(): Promise<void> {
 	const { count } = (await db.prepare('SELECT COUNT(*) as count FROM shopping_items').get()) as {
 		count: number;
 	};
-	if (count > 0) return;
+	if (count > 0 || SHOPPING_LIST_SEED.length === 0) return;
 
-	const insert = db.prepare('INSERT INTO shopping_items (name, note, purchased) VALUES (?, ?, ?)');
-	for (const row of SHOPPING_LIST_SEED) {
-		await insert.run(row.name, row.note, row.purchased ? 1 : 0);
-	}
+	const { placeholders, params } = buildValuesList(
+		SHOPPING_LIST_SEED.map((row) => [row.name, row.note, row.purchased ? 1 : 0])
+	);
+	await db.prepare(`INSERT INTO shopping_items (name, note, purchased) VALUES ${placeholders}`).run(...params);
 }

@@ -1,4 +1,4 @@
-import { db } from './db';
+import { buildValuesList, db } from './db';
 import { WASTE_COLLECTIONS_2026 } from './seed-data/waste-collections-2026';
 
 export interface WasteTypeInfo {
@@ -87,9 +87,10 @@ export async function seedWasteCollectionsIfEmpty(): Promise<void> {
 	const { count } = (await db.prepare('SELECT COUNT(*) as count FROM waste_collections').get()) as {
 		count: number;
 	};
-	if (count > 0) return;
+	if (count > 0 || WASTE_COLLECTIONS_2026.length === 0) return;
 
-	for (const entry of WASTE_COLLECTIONS_2026) {
-		await upsertWasteCollection(entry.date, entry.types);
-	}
+	const { placeholders, params } = buildValuesList(
+		WASTE_COLLECTIONS_2026.map((e) => [e.date, e.types.join(',')])
+	);
+	await db.prepare(`INSERT INTO waste_collections (date, types) VALUES ${placeholders}`).run(...params);
 }

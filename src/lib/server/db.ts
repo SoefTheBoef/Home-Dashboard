@@ -22,13 +22,41 @@ pg.types.setTypeParser(20, (val: string) => Number(val));
 const pool = new pg.Pool({
 	connectionString: env.DATABASE_URL,
 	// Hosted Postgres (e.g. Neon) requires SSL; a local Docker Postgres doesn't have it configured.
-	ssl: isLocalHost ? false : { rejectUnauthorized: false }
+	ssl: isLocalHost ? false : { rejectUnauthorized: false },
+	// Fail fast instead of hanging forever if the pooler can't hand back a connection (e.g. Neon's
+	// compute is cold-starting or its pooled endpoint is unreachable) or a query gets stuck.
+	connectionTimeoutMillis: 10_000,
+	query_timeout: 10_000,
+	statement_timeout: 10_000
+});
+
+// node-postgres never issues named server-side PREPARE statements for pool.query(text, values) —
+// every call sends a fresh unnamed Parse/Bind/Execute, which is exactly what PgBouncer's
+// transaction-pooling mode requires. So there's no "disable prepared statements" flag needed (or
+// available) here; that's a real gotcha for ORMs that cache named statements (Prisma, postgres.js),
+// not for this driver.
+//
+// What Neon's serverless Postgres *can* do is close an idle connection out from under the pool at
+// any time. Without this handler that surfaces as an unhandled 'error' event, which crashes the
+// whole Node process — turning a routine idle disconnect into a full outage with nothing logged.
+pool.on('error', (err) => {
+	console.error('Unexpected error on idle Postgres client:', err);
 });
 
 /** Converts SQLite-style '?' positional placeholders to Postgres's '$1, $2, ...'. */
 function toPgPlaceholders(sql: string): string {
 	let i = 0;
 	return sql.replace(/\?/g, () => `$${++i}`);
+}
+
+/**
+ * Builds the `VALUES (?, ?), (?, ?), ...` fragment and flattened params for a multi-row INSERT —
+ * used by one-time seed imports so they cost one round trip instead of one per row (meaningful
+ * against a hosted/pooled Postgres like Neon, where every round trip pays real network latency).
+ */
+export function buildValuesList(rows: unknown[][]): { placeholders: string; params: unknown[] } {
+	const placeholders = rows.map((row) => `(${row.map(() => '?').join(', ')})`).join(', ');
+	return { placeholders, params: rows.flat() };
 }
 
 export interface PreparedStatement {
@@ -71,8 +99,27 @@ export const db = {
 // ever calling into it, and that must not require a live database connection.
 let readyPromise: Promise<void> | undefined;
 function getReady(): Promise<void> {
-	if (!readyPromise) readyPromise = setup();
+	if (!readyPromise) {
+		// If setup fails (e.g. Neon's compute was still cold-starting and the connection timed out),
+		// forget the promise so the *next* call gets a fresh attempt instead of every future request
+		// immediately re-rejecting with the same stale error for the rest of the process's life.
+		readyPromise = setup().catch((err) => {
+			readyPromise = undefined;
+			throw err;
+		});
+	}
 	return readyPromise;
+}
+
+/**
+ * Kicks off schema setup/seeding as soon as the server process actually starts, instead of
+ * leaving it to block whichever user request happens to run the first query (previously that was
+ * almost always the first login attempt after a deploy). Safe to call at module scope — unlike
+ * `getReady`, this is fire-and-forget so a slow or failed warmup doesn't crash the process; the
+ * next real query still awaits `getReady()` and will surface any error properly.
+ */
+export function warmup(): void {
+	getReady().catch((err) => console.error('Database warmup failed:', err));
 }
 
 async function setup(): Promise<void> {

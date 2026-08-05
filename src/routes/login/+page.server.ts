@@ -19,7 +19,17 @@ export const actions: Actions = {
 			return fail(400, { error: 'Username and password are required.', username });
 		}
 
-		const user = await findUserByUsername(username);
+		let user: Awaited<ReturnType<typeof findUserByUsername>>;
+		try {
+			user = await findUserByUsername(username);
+		} catch (err) {
+			console.error('Login query failed:', err);
+			return fail(504, {
+				error: "Couldn't reach the database in time — please try again in a moment.",
+				username
+			});
+		}
+
 		if (!user || !verifyPassword(password, user.password_hash)) {
 			return fail(400, { error: 'Invalid username or password.', username });
 		}
