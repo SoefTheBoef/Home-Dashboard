@@ -144,23 +144,39 @@ export interface PreparedStatement {
 	run(...params: unknown[]): Promise<{ changes: number }>;
 }
 
-function prepare(sql: string): PreparedStatement {
+/** Builds get/all/run around execute() with no readiness check — see prepare() vs. prepareRaw(). */
+function prepareRaw(sql: string): PreparedStatement {
 	const pgSql = toPgPlaceholders(sql);
 	return {
 		async get(...params: unknown[]) {
-			await getReady();
 			const result = await execute(pgSql, params);
 			return result.rows[0];
 		},
 		async all(...params: unknown[]) {
-			await getReady();
 			const result = await execute(pgSql, params);
 			return result.rows;
 		},
 		async run(...params: unknown[]) {
-			await getReady();
 			const result = await execute(pgSql, params);
 			return { changes: result.rowCount ?? 0 };
+		}
+	};
+}
+
+function prepare(sql: string): PreparedStatement {
+	const raw = prepareRaw(sql);
+	return {
+		async get(...params: unknown[]) {
+			await getReady();
+			return raw.get(...params);
+		},
+		async all(...params: unknown[]) {
+			await getReady();
+			return raw.all(...params);
+		},
+		async run(...params: unknown[]) {
+			await getReady();
+			return raw.run(...params);
 		}
 	};
 }
@@ -172,6 +188,16 @@ export const db = {
 		await execute(sql, []);
 	}
 };
+
+/**
+ * Same shape as `db`, but skips the getReady() check — for use ONLY by code that runs from
+ * *within* setup()'s own call graph (the one-time seed functions in waste.ts/food.ts). Those run
+ * as part of setup() itself, so if they called the regular `db` (which awaits getReady() first),
+ * they'd deadlock: getReady() returns the very in-progress setup() promise they're being called
+ * from, which can only resolve once they return — a promise waiting on itself, forever. Regular
+ * app code (routes, everything outside this file) must always use `db`, never this.
+ */
+export const dbDuringSetup = { prepare: prepareRaw };
 
 // Lazy: only connects and runs schema setup on the first actual query, not at module import
 // time. Building the app (or SSR analysis during `vite build`) imports this module without
