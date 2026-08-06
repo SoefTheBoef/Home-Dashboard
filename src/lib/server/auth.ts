@@ -16,8 +16,12 @@ export function hashPassword(password: string): string {
 	return bcrypt.hashSync(password, 12);
 }
 
-export function verifyPassword(password: string, hash: string): boolean {
-	return bcrypt.compareSync(password, hash);
+/**
+ * Async (not compareSync) so a bcrypt comparison — CPU-bound work — doesn't block the Node event
+ * loop and stall every other in-flight request while it runs.
+ */
+export function verifyPassword(password: string, hash: string): Promise<boolean> {
+	return bcrypt.compare(password, hash);
 }
 
 export async function findUserByUsername(username: string) {
