@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { env } from '$env/dynamic/private';
 import { seedWasteCollectionsIfEmpty } from './waste';
 import { seedFoodInventoryIfEmpty, seedShoppingListIfEmpty } from './food';
+import { withTimeout } from './timeout';
 
 if (!env.DATABASE_URL) {
 	throw new Error(
@@ -19,15 +20,22 @@ const isLocalHost = /localhost|127\.0\.0\.1/.test(env.DATABASE_URL);
 // remember to do it at every call site.
 pg.types.setTypeParser(20, (val: string) => Number(val));
 
+const MAX_POOL_SIZE = 10;
+const CONNECTION_TIMEOUT_MS = 10_000;
+const QUERY_TIMEOUT_MS = 10_000;
+
 const pool = new pg.Pool({
 	connectionString: env.DATABASE_URL,
 	// Hosted Postgres (e.g. Neon) requires SSL; a local Docker Postgres doesn't have it configured.
 	ssl: isLocalHost ? false : { rejectUnauthorized: false },
-	// Fail fast instead of hanging forever if the pooler can't hand back a connection (e.g. Neon's
-	// compute is cold-starting or its pooled endpoint is unreachable) or a query gets stuck.
-	connectionTimeoutMillis: 10_000,
-	query_timeout: 10_000,
-	statement_timeout: 10_000
+	max: MAX_POOL_SIZE,
+	// Covers BOTH steps of acquiring a client: waiting for a free slot in an already-full pool, and
+	// the physical TCP/TLS connect once a slot is available — so "every connection is stuck and
+	// nothing is coming free" fails with a clear error instead of queueing forever.
+	connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+	// Server-side backstop (SET statement_timeout at session start) — belt-and-suspenders alongside
+	// the driver-side query_timeout below and our own withTimeout() wrapper around every query.
+	statement_timeout: QUERY_TIMEOUT_MS
 });
 
 // node-postgres never issues named server-side PREPARE statements for pool.query(text, values) —
@@ -42,6 +50,36 @@ const pool = new pg.Pool({
 pool.on('error', (err) => {
 	console.error('Unexpected error on idle Postgres client:', err);
 });
+
+function poolState(): string {
+	return `total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`;
+}
+
+/**
+ * Every query goes through here — never through pool.query() directly — so we control the whole
+ * lifecycle of the client we check out: acquire (bounded by connectionTimeoutMillis, which covers
+ * waiting for a free pool slot as well as the physical connect), run the query under our own
+ * timeout, and *always* hand the client back. On success it's released healthy for reuse; on any
+ * error or timeout it's released with an error, which tells pg to destroy that physical connection
+ * instead of returning it to the pool — we can't be sure it's still in a clean protocol state if
+ * our own timeout fired while a query was still in flight on it, and reusing a client that's
+ * secretly still busy is exactly how a pool silently exhausts itself with requests that then hang
+ * forever waiting for a slot that's never coming free.
+ */
+async function execute(sql: string, params: unknown[]): Promise<pg.QueryResult> {
+	console.log(`[db] acquiring client (pool ${poolState()}) for: ${sql.trim().slice(0, 80)}`);
+	const client = await pool.connect();
+	console.log(`[db] acquired client (pool ${poolState()})`);
+
+	try {
+		const result = await withTimeout(client.query(sql, params), QUERY_TIMEOUT_MS, 'Query');
+		client.release();
+		return result;
+	} catch (err) {
+		client.release(err instanceof Error ? err : new Error(String(err)));
+		throw err;
+	}
+}
 
 /** Converts SQLite-style '?' positional placeholders to Postgres's '$1, $2, ...'. */
 function toPgPlaceholders(sql: string): string {
@@ -70,17 +108,17 @@ function prepare(sql: string): PreparedStatement {
 	return {
 		async get(...params: unknown[]) {
 			await getReady();
-			const result = await pool.query(pgSql, params);
+			const result = await execute(pgSql, params);
 			return result.rows[0];
 		},
 		async all(...params: unknown[]) {
 			await getReady();
-			const result = await pool.query(pgSql, params);
+			const result = await execute(pgSql, params);
 			return result.rows;
 		},
 		async run(...params: unknown[]) {
 			await getReady();
-			const result = await pool.query(pgSql, params);
+			const result = await execute(pgSql, params);
 			return { changes: result.rowCount ?? 0 };
 		}
 	};
@@ -90,7 +128,7 @@ export const db = {
 	prepare,
 	async exec(sql: string): Promise<void> {
 		await getReady();
-		await pool.query(sql);
+		await execute(sql, []);
 	}
 };
 
@@ -123,7 +161,8 @@ export function warmup(): void {
 }
 
 async function setup(): Promise<void> {
-	await pool.query(`
+	await execute(
+		`
 		CREATE TABLE IF NOT EXISTS users (
 		  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 		  username TEXT UNIQUE NOT NULL,
@@ -314,7 +353,9 @@ async function setup(): Promise<void> {
 		  playlist_image TEXT,
 		  created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 		);
-	`);
+	`,
+		[]
+	);
 
 	await seedInitialUsers();
 	await seedWasteCollectionsIfEmpty();
@@ -327,7 +368,7 @@ async function setup(): Promise<void> {
  * already has anyone in it) — so a fresh deploy is loggable-into with zero manual setup.
  */
 async function seedInitialUsers(): Promise<void> {
-	const { rows } = await pool.query('SELECT COUNT(*) AS count FROM users');
+	const { rows } = await execute('SELECT COUNT(*) AS count FROM users', []);
 	if (Number(rows[0].count) > 0) return;
 
 	const candidates = [
@@ -348,7 +389,7 @@ async function seedInitialUsers(): Promise<void> {
 	for (const u of candidates) {
 		if (!u.username || !u.password) continue;
 		const passwordHash = bcrypt.hashSync(u.password, 12);
-		await pool.query(
+		await execute(
 			'INSERT INTO users (username, password_hash, display_name, color) VALUES ($1, $2, $3, $4) ON CONFLICT (username) DO NOTHING',
 			[u.username, passwordHash, u.displayName, u.color]
 		);
