@@ -23,6 +23,10 @@ pg.types.setTypeParser(20, (val: string) => Number(val));
 const MAX_POOL_SIZE = 10;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const QUERY_TIMEOUT_MS = 10_000;
+// Generous: setup() makes several sequential round trips (schema DDL, user seed, three batched
+// data seeds), so this needs headroom beyond a single query's timeout — but it must still be
+// bounded, since every request shares this one promise until it settles.
+const SETUP_TIMEOUT_MS = 45_000;
 
 const pool = new pg.Pool({
 	connectionString: env.DATABASE_URL,
@@ -67,12 +71,49 @@ function poolState(): string {
  * forever waiting for a slot that's never coming free.
  */
 async function execute(sql: string, params: unknown[]): Promise<pg.QueryResult> {
-	console.log(`[db] acquiring client (pool ${poolState()}) for: ${sql.trim().slice(0, 80)}`);
-	const client = await pool.connect();
-	console.log(`[db] acquired client (pool ${poolState()})`);
+	const label = sql.trim().slice(0, 80);
+
+	// Logged independent of whatever withTimeout()/Promise.race ends up reporting, so we can tell
+	// whether pool.connect() or the raw query itself actually settles quickly in the background
+	// even when the caller sees a timeout — if so, the bug is in the race wiring, not the network.
+	const connectStart = Date.now();
+	console.log(`[db] pool.connect() starting (pool ${poolState()}) for: ${label}`);
+	const clientPromise = pool.connect();
+	clientPromise.then(
+		() => console.log(`[db] pool.connect() RESOLVED after ${Date.now() - connectStart}ms (pool ${poolState()})`),
+		(err) => console.log(`[db] pool.connect() REJECTED after ${Date.now() - connectStart}ms: ${err.message}`)
+	);
+
+	// Defense in depth: pg's own connectionTimeoutMillis is supposed to bound this already, but we
+	// don't fully trust that given what we're debugging — so enforce our own hard cap too. If
+	// pool.connect() *does* eventually resolve after we've given up on it, immediately release the
+	// orphaned client with an error instead of leaving it permanently checked out with nothing ever
+	// calling .release() on it — that's a silent, permanent pool-capacity leak of exactly the kind
+	// we're chasing.
+	let client: pg.PoolClient;
+	try {
+		client = await withTimeout(clientPromise, CONNECTION_TIMEOUT_MS, 'Pool connect');
+	} catch (err) {
+		clientPromise
+			.then((orphan) => orphan.release(new Error('Discarding a connect() that resolved after our own timeout')))
+			.catch(() => {
+				/* the connect itself failed too — nothing to release */
+			});
+		throw err;
+	}
 
 	try {
-		const result = await withTimeout(client.query(sql, params), QUERY_TIMEOUT_MS, 'Query');
+		const queryStart = Date.now();
+		const queryPromise = client.query(sql, params);
+		queryPromise.then(
+			(res) =>
+				console.log(
+					`[db] RAW query RESOLVED after ${Date.now() - queryStart}ms (${res.rowCount ?? 0} rows) for: ${label}`
+				),
+			(err) => console.log(`[db] RAW query REJECTED after ${Date.now() - queryStart}ms: ${err.message} for: ${label}`)
+		);
+
+		const result = await withTimeout(queryPromise, QUERY_TIMEOUT_MS, 'Query');
 		client.release();
 		return result;
 	} catch (err) {
@@ -138,10 +179,15 @@ export const db = {
 let readyPromise: Promise<void> | undefined;
 function getReady(): Promise<void> {
 	if (!readyPromise) {
-		// If setup fails (e.g. Neon's compute was still cold-starting and the connection timed out),
-		// forget the promise so the *next* call gets a fresh attempt instead of every future request
-		// immediately re-rejecting with the same stale error for the rest of the process's life.
-		readyPromise = setup().catch((err) => {
+		// Every query awaits this same shared promise, so if setup() itself never settles — not just
+		// "rejects", but genuinely never resolves *or* rejects, which is possible if something inside
+		// it hangs in a way that doesn't hit our own per-query timeouts — every request in the process
+		// would wait on it forever with no way to recover. Bounding it here guarantees it always
+		// settles one way or another.
+		readyPromise = withTimeout(setup(), SETUP_TIMEOUT_MS, 'Database setup').catch((err) => {
+			// Forget the promise so the *next* call gets a fresh attempt instead of every future
+			// request immediately re-rejecting with the same stale error for the rest of the
+			// process's life (or, before this fix, all sharing one promise that never even rejected).
 			readyPromise = undefined;
 			throw err;
 		});

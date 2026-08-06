@@ -1,7 +1,7 @@
 import { fail, isRedirect, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { SESSION_COOKIE, createSession, findUserByUsername, verifyPassword } from '$lib/server/auth';
-import { withTimeout } from '$lib/server/timeout';
+import { logWhenSettled, withTimeout } from '$lib/server/timeout';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.user) {
@@ -10,7 +10,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 	return {};
 };
 
-const DB_TIMEOUT_MS = 8_000;
+// Deliberately set above the DB layer's own connect+query timeouts (10s + 10s in
+// src/lib/server/db.ts) rather than below them. An outer timeout smaller than the layers beneath
+// it always fires first and only ever reports its own fixed value — which is exactly what made
+// every failed login look identical at ~8000ms regardless of what was actually happening
+// underneath. Once the real cause is fixed, this can come back down for snappier user-facing
+// failures; for now it's set to let the inner timeout's true duration/error surface instead of
+// masking it.
+const DB_TIMEOUT_MS = 22_000;
 
 export const actions: Actions = {
 	default: async ({ request, cookies, url }) => {
@@ -24,7 +31,7 @@ export const actions: Actions = {
 			}
 
 			const user = await withTimeout(
-				findUserByUsername(username),
+				logWhenSettled(findUserByUsername(username), 'Login user lookup (raw)'),
 				DB_TIMEOUT_MS,
 				'Login user lookup'
 			);
